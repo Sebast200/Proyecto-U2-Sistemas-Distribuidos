@@ -1,0 +1,73 @@
+version: "3.8"
+
+services:
+  servidor:
+    build: ./nivel0
+    container_name: servidor
+    ports:
+      - "5000:5000"
+    networks:
+      - red-calculo
+    volumes:
+      - estanque-data:/app/data
+    restart: unless-stopped
+
+  empresa:
+    build: ./nivel3
+    container_name: empresa
+    ports:
+      - "7000:7000"
+    networks:
+      - red-calculo
+    volumes:
+      - empresa-data:/app/data
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+
+  distribuidor:
+    build: ./nivel2
+    container_name: distribuidor
+    depends_on:
+      - empresa
+    ports:
+      - "6000:6000"
+    networks:
+      - red-calculo
+    volumes:
+      - distribuidor-data:/app/data
+    environment:
+      - EMPRESA_HOST=empresa
+      - EMPRESA_PORT=7000
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+
+  cliente:
+    build: ./nivel1
+    container_name: cliente
+    depends_on:
+      - servidor
+      - distribuidor
+    networks:
+      - red-calculo
+    volumes:
+      - surtidor-data:/app/data
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+
+
+networks:
+  red-calculo:
+    driver: bridge
+
+volumes:
+  estanque-data:
+    driver: local
+  surtidor-data:
+    driver: local
+  distribuidor-data:
+    driver: local
+  empresa-data:
+    driver: local
