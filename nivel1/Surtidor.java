@@ -4,17 +4,20 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class Surtidor {
     private String id;
-    private boolean estado; //Para comprobar si se esta utilizando el surtidor y asi no permitir actualizar el precio
+    private boolean estado; // true = ocupado vendiendo, false = disponible
     private Map<String, Combustible> combustibles;
+    private Map<String, Double> preciosPendientes; // Cola de precios pendientes mientras está ocupado
     private PrintWriter salidaDistribuidor; // Para enviar transacciones al distribuidor
 
     public Surtidor(String _id){
         this.id = _id;
         this.estado = false;
         this.combustibles = new HashMap<>();
+        this.preciosPendientes = new ConcurrentHashMap<>();
         this.salidaDistribuidor = null;
     }
     
@@ -27,6 +30,10 @@ public class Surtidor {
     public void setEstado(boolean _estado){
         this.estado = _estado;
     }
+    
+    public boolean getEstado(){
+        return this.estado;
+    }
 
     public void inicializarCombustible() {
         combustibles.put("93", new Combustible("93", 0, 0, 100.0, 0.0));
@@ -37,7 +44,7 @@ public class Surtidor {
     }
 
     public synchronized boolean registrarCarga(String tipo, double litros) {
-        if (estado && combustibles.containsKey(tipo)) {
+        if (combustibles.containsKey(tipo)) {
             System.out.println("Registrando carga de combustible | "+ "Tipo: " +tipo+" Cantidad: "+litros+" Litros");
             combustibles.get(tipo).registrarCarga(litros);
             
@@ -53,11 +60,36 @@ public class Surtidor {
     }
 
     public synchronized boolean actualizarPrecio(String tipo, double nuevoPrecio) {
-        if (estado && combustibles.containsKey(tipo)) {
-            combustibles.get(tipo).actualizarPrecio(nuevoPrecio);
-            return true;
+        if (combustibles.containsKey(tipo)) {
+            if (estado) {
+                // Si está ocupado (vendiendo), guardar el precio en la cola de pendientes
+                preciosPendientes.put(tipo, nuevoPrecio);
+                System.out.println("[PRECIO] Surtidor ocupado vendiendo. Precio de " + tipo + " pendiente: $" + nuevoPrecio);
+                return false; // Indica que no se aplicó aún
+            } else {
+                // Si está disponible, aplicar inmediatamente
+                combustibles.get(tipo).actualizarPrecio(nuevoPrecio);
+                System.out.println("[PRECIO] ✓ Precio de " + tipo + " actualizado a $" + nuevoPrecio);
+                return true;
+            }
         }
         return false;
+    }
+    
+    private synchronized void aplicarPreciosPendientes() {
+        if (!preciosPendientes.isEmpty()) {
+            System.out.println("\n[PRECIO] Aplicando " + preciosPendientes.size() + " precio(s) pendiente(s)...");
+            for (Map.Entry<String, Double> entry : preciosPendientes.entrySet()) {
+                String tipo = entry.getKey();
+                double precio = entry.getValue();
+                if (combustibles.containsKey(tipo)) {
+                    combustibles.get(tipo).actualizarPrecio(precio);
+                    System.out.println("[PRECIO] ✓ " + tipo + " actualizado a $" + precio);
+                }
+            }
+            preciosPendientes.clear();
+            System.out.println("[PRECIO] Todos los precios pendientes aplicados\n");
+        }
     }
 
     public void guardarEstado(String rutaArchivo) throws IOException {
@@ -440,6 +472,15 @@ public class Surtidor {
                     continue;
                 }
                 
+                // Verificar si el surtidor está ocupado antes de permitir EXTRAER
+                if (comando.equals("EXTRAER")) {
+                    if (surtidor.getEstado()) {
+                        System.out.println("❌ ERROR: Surtidor ocupado. Hay una venta en proceso.");
+                        System.out.println("   Por favor espere a que finalice la transacción actual.");
+                        continue;
+                    }
+                }
+                
                 // Comandos que se envían al servidor (estanque)
                 salida.println(mensaje);
                 
@@ -453,14 +494,44 @@ public class Surtidor {
                         try {
                             String tipo = partes[1];
                             double litros = Double.parseDouble(partes[2]);
+                            
+                            // Marcar surtidor como ocupado durante la venta
                             surtidor.setEstado(true);
+                            System.out.println("\n╔═══════════════════════════════════════════╗");
+                            System.out.println("║  🔄 VENTA EN PROCESO - Surtidor " + surtidorId + "        ║");
+                            System.out.println("║  Combustible: " + tipo + " | " + litros + " L              ║");
+                            System.out.println("║  Tiempo estimado: 20 segundos          ║");
+                            System.out.println("╚═══════════════════════════════════════════╝\n");
+                            
+                            // Registrar inmediatamente
                             if (surtidor.registrarCarga(tipo, litros)) {
                                 System.out.println("[SURTIDOR] Registrada venta de " + litros + " L de " + tipo);
                                 surtidor.guardarEstado(archivoEstado);
                             }
+                            
+                            // Simular tiempo de venta (20 segundos)
+                            System.out.println("[VENTA] Procesando transacción");
+                            for (int i = 1; i <= 20; i++) {
+                                Thread.sleep(1000);
+                                if (i % 5 == 0) {
+                                    System.out.println("[VENTA] Progreso: " + i + "/20 segundos...");
+                                }
+                            }
+                            
+                            // Marcar como disponible y aplicar precios pendientes
+                            surtidor.setEstado(false);
+                            System.out.println("\n╔═══════════════════════════════════════════╗");
+                            System.out.println("║  ✓ VENTA COMPLETADA - Surtidor " + surtidorId + "        ║");
+                            System.out.println("╚═══════════════════════════════════════════╝\n");
+                            
+                            surtidor.aplicarPreciosPendientes();
+                            
+                        } catch (InterruptedException ie) {
+                            System.err.println("[ERROR] Venta interrumpida");
                             surtidor.setEstado(false);
                         } catch (Exception e) {
                             System.err.println("[ERROR] No se pudo registrar la carga en el surtidor");
+                            surtidor.setEstado(false);
                         }
                     }
                     
