@@ -43,9 +43,27 @@ services:
     tty: true
     restart: unless-stopped
 
+  distribuidor2:
+    build: ./nivel2
+    container_name: distribuidor2
+    depends_on:
+      - empresa
+    ports:
+      - "6001:6000"
+    networks:
+      - red-calculo
+    volumes:
+      - distribuidor2-data:/app/data
+    environment:
+      - EMPRESA_HOST=empresa
+      - EMPRESA_PORT=7000
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+
   cliente:
     build: ./nivel1
-    container_name: cliente
+    container_name: surtidor1
     depends_on:
       - servidor
       - distribuidor
@@ -53,10 +71,33 @@ services:
       - red-calculo
     volumes:
       - surtidor-data:/app/data
+    environment:
+      - DISTRIBUIDOR_HOST=distribuidor
+      - DISTRIBUIDOR_PORT=6000
+      - ESTANQUE_HOST=servidor
+      - ESTANQUE_PORT=5000
     stdin_open: true
     tty: true
     restart: unless-stopped
 
+  surtidor2:
+    build: ./nivel1
+    container_name: surtidor2
+    depends_on:
+      - servidor
+      - distribuidor2
+    networks:
+      - red-calculo
+    volumes:
+      - surtidor2-data:/app/data
+    environment:
+      - DISTRIBUIDOR_HOST=distribuidor2
+      - DISTRIBUIDOR_PORT=6000
+      - ESTANQUE_HOST=servidor
+      - ESTANQUE_PORT=5000
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
 
 networks:
   red-calculo:
@@ -67,7 +108,11 @@ volumes:
     driver: local
   surtidor-data:
     driver: local
+  surtidor2-data:
+    driver: local
   distribuidor-data:
+    driver: local
+  distribuidor2-data:
     driver: local
   empresa-data:
     driver: local
