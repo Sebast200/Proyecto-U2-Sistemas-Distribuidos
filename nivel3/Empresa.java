@@ -3,6 +3,7 @@ import java.net.*;
 import java.util.*;
 
 public class Empresa {
+    private final List<String> reportesRecibidos = Collections.synchronizedList(new ArrayList<>());
     private String nombreEmpresa;
     private Map<String, Double> preciosCombustibles;
     private List<DistribuidorConectado> distribuidores;
@@ -75,7 +76,26 @@ public class Empresa {
         }
         System.out.println("============================\n");
     }
-    
+
+    private void mostrarReportes() {
+        System.out.println("\n=== REPORTES RECIBIDOS ===");
+        synchronized (reportesRecibidos) {
+            if (reportesRecibidos.isEmpty()) {
+                System.out.println("No se han recibido reportes aún.");
+            } else {
+                for (String reporte : reportesRecibidos) {
+                    System.out.println("  - " + reporte);
+                }
+            }
+        }
+        System.out.println("===========================\n");
+    }
+
+    public synchronized void agregarReporte(String reporte) {
+        reportesRecibidos.add(reporte);
+    }
+
+        
     private void enviarPreciosADistribuidor(DistribuidorConectado distribuidor) {
         System.out.println("[SYNC] Enviando precios corporativos al distribuidor " + distribuidor.getId());
         for (Map.Entry<String, Double> entry : preciosCombustibles.entrySet()) {
@@ -141,43 +161,37 @@ public class Empresa {
     }
     
     private void menuPrincipal(Scanner sc) {
-        while (true) {
-            System.out.println("\n=== MENÚ DE LA EMPRESA ===");
-            System.out.println("1. Listar distribuidores conectados");
-            System.out.println("2. Ver precios corporativos actuales");
-            System.out.println("3. Actualizar precio de un combustible");
-            System.out.println("4. Actualizar todos los precios");
-            System.out.println("5. Enviar precios a todos los distribuidores");
-            System.out.println("6. Salir");
-            System.out.print("\nSeleccione opción: ");
-            
-            String opcion = sc.nextLine();
-            
-            switch (opcion) {
-                case "1":
-                    listarDistribuidores();
-                    break;
-                case "2":
-                    mostrarPrecios();
-                    break;
-                case "3":
-                    actualizarPrecio(sc);
-                    break;
-                case "4":
-                    actualizarTodosLosPrecios(sc);
-                    break;
-                case "5":
-                    enviarPreciosATodos();
-                    break;
-                case "6":
-                    System.out.println("Saliendo...");
-                    System.exit(0);
-                    break;
-                default:
-                    System.out.println("Opción inválida");
-            }
+    while (true) {
+        System.out.println("\n=== MENÚ DE LA EMPRESA ===");
+        System.out.println("1. Listar distribuidores conectados");
+        System.out.println("2. Ver precios corporativos actuales");
+        System.out.println("3. Actualizar precio de un combustible");
+        System.out.println("4. Actualizar todos los precios");
+        System.out.println("5. Enviar precios a todos los distribuidores");
+        System.out.println("6. Salir");
+        System.out.println("7. Ver reportes recibidos"); 
+        System.out.print("\nSeleccione opción: ");
+
+        String opcion = sc.nextLine();
+
+        switch (opcion) {
+            case "1": listarDistribuidores(); break;
+            case "2": mostrarPrecios(); break;
+            case "3": actualizarPrecio(sc); break;
+            case "4": actualizarTodosLosPrecios(sc); break;
+            case "5": enviarPreciosATodos(); break;
+            case "6":
+                System.out.println("Saliendo...");
+                System.exit(0);
+                break;
+            case "7": // 👇 nuevo caso
+                mostrarReportes();
+                break;
+            default:
+                System.out.println("Opción inválida");
         }
     }
+}
     
     private void listarDistribuidores() {
         System.out.println("\n=== DISTRIBUIDORES CONECTADOS ===");
@@ -320,7 +334,18 @@ public class Empresa {
                     System.out.println("[" + idDistribuidor + "] " + mensaje);
                     
                     // Responder si es necesario
-                    if (mensaje.startsWith("REPORTE:")) {
+                    if (mensaje.startsWith("REPORTE_AUTOMATICO")) {
+                        String contenido = mensaje.substring(18).trim();
+
+                        // 🔹 Formatear el contenido para que se vea legible
+                        String contenidoFormateado = contenido.replace("|", "\n[] ");
+
+                        String hora = new java.text.SimpleDateFormat("HH:mm:ss").format(new java.util.Date());
+                        String registro = String.format("[%s] (%s)\n[] %s", hora, idDistribuidor, contenidoFormateado);
+
+                        empresa.agregarReporte(registro);
+
+                        System.out.println("📝 [REPORTE] " + registro);
                         salida.println("ACK");
                     }
                 }

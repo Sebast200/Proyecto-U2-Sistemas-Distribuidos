@@ -10,6 +10,8 @@ public class Distribuidor {
     private static final int PUERTO_SURTIDORES = 6000; // Puerto donde escucha el distribuidor
     private static final String DB_PATH = "/app/data/distribuidor.db";
     private Connection dbConnection;
+    private Socket empresaSocket;
+    private PrintWriter empresaSalida;
     
     public Distribuidor(String nombre) {
         this.nombreDistribuidor = nombre;
@@ -364,16 +366,16 @@ public class Distribuidor {
         new Thread(() -> {
             while (true) {
                 try {
-                    Socket socket = new Socket(host, puerto);
-                    BufferedReader entrada = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-                    PrintWriter salida = new PrintWriter(socket.getOutputStream(), true);
+                    empresaSocket = new Socket(host, puerto);
+                    BufferedReader entrada = new BufferedReader(new InputStreamReader(empresaSocket.getInputStream()));
+                    empresaSalida = new PrintWriter(empresaSocket.getOutputStream(), true);
                     
                     System.out.println("[EMPRESA] Conectado a " + host + ":" + puerto);
                     
                     // Identificarse ante la empresa
                     String comando = entrada.readLine();
                     if ("IDENTIFICAR".equals(comando)) {
-                        salida.println("ID:" + nombreDistribuidor);
+                        empresaSalida.println("ID:" + nombreDistribuidor);
                         String respuesta = entrada.readLine();
                         System.out.println("[EMPRESA] " + respuesta);
                     }
@@ -414,7 +416,7 @@ public class Distribuidor {
                     }
                     
                     System.out.println("[EMPRESA] Conexión cerrada");
-                    socket.close();
+                    empresaSocket.close();
                     
                 } catch (IOException e) {
                     System.err.println("[EMPRESA] Error de conexión: " + e.getMessage());
@@ -426,6 +428,72 @@ public class Distribuidor {
                 } catch (InterruptedException ignored) {}
             }
         }).start();
+    }
+
+    public synchronized void enviarReporteAEmpresa(String reporte) {
+        if (empresaSalida != null) {
+            empresaSalida.println(reporte); // Enviar tal cual
+            System.out.println("[→EMPRESA] Reporte enviado:\n" + reporte.replace("|", "\n"));
+        } else {
+            System.err.println("[ERROR] No hay conexión activa con la empresa. Reporte no enviado.");
+        }
+    }
+
+    private String generarResumenGeneral() {
+        if (dbConnection == null) return "[ERROR] BD no disponible";
+
+        StringBuilder reporte = new StringBuilder();
+        try {
+            // Agrupa por surtidor y tipo de combustible
+            String query = """
+                SELECT surtidor_id, tipo_combustible, 
+                    SUM(litros_consumidos) AS total_litros, 
+                    SUM(cantidad_cargas) AS total_cargas
+                FROM transacciones 
+                GROUP BY surtidor_id, tipo_combustible 
+                ORDER BY surtidor_id, tipo_combustible
+            """;
+
+            Statement stmt = dbConnection.createStatement();
+            ResultSet rs = stmt.executeQuery(query);
+
+            // Encabezado con nombre del distribuidor
+            reporte.append("REPORTE_AUTOMATICO ").append(nombreDistribuidor).append(" | ");
+
+            while (rs.next()) {
+                String surtidor = rs.getString("surtidor_id");
+                String tipo = rs.getString("tipo_combustible");
+                double litros = rs.getDouble("total_litros");
+                int cargas = rs.getInt("total_cargas");
+
+                // Agrega cada línea en formato deseado
+                reporte.append(String.format(
+                    "Surtidor=%s \t %s \t Litros=%.2f \t Cargas=%d|",
+                    surtidor, tipo, litros, cargas
+                ));
+            }
+
+            rs.close();
+            stmt.close();
+        } catch (SQLException e) {
+            reporte.append("[ERROR] ").append(e.getMessage());
+        }
+        return reporte.toString();
+    }
+
+    private void iniciarEnvioAutomaticoReportes() {
+        new Thread(() -> {
+            while (true) {
+                try {
+                    Thread.sleep(60000); // cada 60 segundos (puedes ajustar)
+                    String reporte = generarResumenGeneral();
+                    enviarReporteAEmpresa(reporte);
+                } catch (InterruptedException e) {
+                    System.err.println("[REPORTES] Hilo interrumpido: " + e.getMessage());
+                    break;
+                }
+            }
+        }, "Hilo-Reportes-Automaticos").start();
     }
     
     public static void main(String[] args) {
@@ -448,6 +516,8 @@ public class Distribuidor {
         System.out.println("\n[EMPRESA] Conectando a " + empresaHost + ":" + empresaPuerto + "...");
         distribuidor.conectarAEmpresa(empresaHost, empresaPuerto);
         
+        //Envio de reportes automáticos.
+        distribuidor.iniciarEnvioAutomaticoReportes();
         // Menú de comandos
         distribuidor.menuPrincipal(sc);
     }
@@ -760,7 +830,9 @@ public class Distribuidor {
                             salida.println("ERROR: Formato de transacción incorrecto");
                         }
                     } else if (mensaje.startsWith("REPORTE:")) {
+                        String reporte = mensaje.substring(8).trim(); // Quita el "REPORTE:" inicial
                         salida.println("ACK");
+                        distribuidor.enviarReporteAEmpresa("Surtidor=" + idSurtidor + " " + reporte);
                     } else if (mensaje.startsWith("ID:")) {
                         // Ignorar - ya se procesó en la identificación inicial
                     } else if (mensaje.startsWith("OK:") || mensaje.startsWith("ERROR:") || mensaje.equals("ACK")) {
