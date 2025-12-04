@@ -1,0 +1,13 @@
+[galera]
+wsrep_on=ON
+wsrep_provider=/usr/lib/galera/libgalera_smm.so
+wsrep_cluster_name="shopping-galera-cluster"
+wsrep_cluster_address="gcomm://galera-node-1,galera-node-2,galera-node-3"
+
+wsrep_node_address=this_node_placeholder
+wsrep_node_name=this_node_placeholder
+
+wsrep_sst_method=rsync
+binlog_format=ROW
+default_storage_engine=InnoDB
+innodb_autoinc_lock_mode=2
