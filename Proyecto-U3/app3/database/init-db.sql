@@ -1,25 +1,23 @@
 USE biblioteca;
 
-CREATE TABLE users (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    name VARCHAR(100) NOT NULL,
-    email VARCHAR(100)
+CREATE TABLE sync_shopping_lists (
+    id INT PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    synced_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
 
-CREATE TABLE products (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    name VARCHAR(100) NOT NULL,
-    price DECIMAL(10, 2) NOT NULL
+CREATE TABLE sync_shopping_items (
+    id INT PRIMARY KEY,
+    description TEXT NOT NULL,
+    completed BOOLEAN DEFAULT FALSE,
+    list_id INT,
+    synced_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
 
-CREATE TABLE orders (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    user_id INT,
-    product_id INT,
-    order_date DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id) REFERENCES users(id),
-    FOREIGN KEY (product_id) REFERENCES products(id)
+CREATE TABLE sync_hospital_citas (
+    id INT PRIMARY KEY,
+    paciente VARCHAR(255) NOT NULL,
+    descripcion TEXT,
+    fecha VARCHAR(50),
+    synced_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
-
-INSERT INTO users (name, email) VALUES ('Juan Perez', 'juan@test.com'), ('Maria Lopez', 'maria@test.com');
-INSERT INTO products (name, price) VALUES ('Laptop Gamer', 1500.00), ('Mouse RGB', 25.50), ('Teclado Mecanico', 80.00);
