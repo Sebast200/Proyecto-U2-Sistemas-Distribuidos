@@ -1,299 +1,77 @@
 version: '3.8'
 
 services:
-  # ==========================================
-  # APP 1: SHOPPING LIST (Galera Cluster)
-  # ==========================================
-  galera-node-1:
-    image: mariadb:11
-    container_name: galera-node-1
-    restart: unless-stopped
-    environment:
-      MYSQL_ROOT_PASSWORD: 123456
-      MYSQL_DATABASE: proyecto3
-    command: >
-      bash -c "pkill -9 rsync || true && rm -f /var/lib/mysql/rsync_sst_pid && if [ -f /var/lib/mysql/grastate.dat ]; then sed -i 's/safe_to_bootstrap: 0/safe_to_bootstrap: 1/' /var/lib/mysql/grastate.dat; fi && docker-entrypoint.sh --wsrep-new-cluster"
-    volumes:
-      - galera_data_1:/var/lib/mysql
-      - ./app1/galera.cnf:/etc/mysql/conf.d/galera.cnf
-    networks:
-      - main-network
-
-  galera-node-2:
-    image: mariadb:11
-    container_name: galera-node-2
-    restart: unless-stopped
-    environment:
-      MYSQL_ROOT_PASSWORD: 123456
-    volumes:
-      - galera_data_2:/var/lib/mysql
-      - ./app1/galera.cnf:/etc/mysql/conf.d/galera.cnf
-    networks:
-      - main-network
-
-  galera-node-3:
-    image: mariadb:11
-    container_name: galera-node-3
-    restart: unless-stopped
-    environment:
-      MYSQL_ROOT_PASSWORD: 123456
-    volumes:
-      - galera_data_3:/var/lib/mysql
-      - ./app1/galera.cnf:/etc/mysql/conf.d/galera.cnf
-    networks:
-      - main-network
-
-  proxysql:
-    image: proxysql/proxysql
-    container_name: proxysql
-    ports:
-      - "6033:6033"
-      - "6032:6032"
-    volumes:
-      - ./app1/proxysql.cnf:/etc/proxysql.cnf
-    depends_on:
-      - galera-node-1
-      - galera-node-2
-      - galera-node-3
-    networks:
-      - main-network
-
-  app1-backend:
-    build:
-      context: ./app1/back
-      dockerfile: Dockerfile
-    restart: unless-stopped
-    environment:
-      DB_HOST: proxysql
-      DB_PORT: 6033
-      DB_USER: ${DB_USER:-root}
-      DB_PASSWORD: ${DB_PASSWORD:-123456}
-      DB_NAME: ${DB_NAME:-proyecto3}
-      PORT: 3000
-    networks:
-      - main-network
-
-  app1-frontend:
-    build:
-      context: ./app1/front
-      dockerfile: Dockerfile
-      args:
-        VITE_API_URL: http://localhost:3002 # OJO: Cambiado a 3002
-        VITE_REPLICA_ID: ${HOSTNAME:-frontend}
-    restart: unless-stopped
-    depends_on:
-      - app1-backend
-    networks:
-      - main-network
-
-  # NGINX APP 1 (Puertos modificados para evitar conflictos)
-  nginx-backend:
-    image: nginx:alpine
-    container_name: nginx-backend
-    restart: unless-stopped
-    volumes:
-      - ./app1/nginx-backend.conf:/etc/nginx/conf.d/default.conf:ro
-    ports:
-      - "3002:80" # CAMBIO: De 3000 a 3002 para dejar libre el 3000 a Orchestrator
-    depends_on:
-      - app1-backend
-    networks:
-      - main-network
-
-  nginx-frontend:
-    image: nginx:alpine
-    container_name: nginx-frontend
-    restart: unless-stopped
-    volumes:
-      - ./app1/nginx-frontend.conf:/etc/nginx/conf.d/default.conf:ro
-    ports:
-      - "3001:80"
-    depends_on:
-      - app1-frontend
-    networks:
-      - main-network
-
-  # ==========================================
-  # APP 2: HOSPITAL (Postgres + HAProxy)
-  # ==========================================
-  pg-master:
+  # --- NODO A ---
+  pg-a:
     image: postgres:15-alpine
-    container_name: pg-master
+    container_name: pg-a
+    hostname: pg-a
     environment:
       POSTGRES_USER: admin
       POSTGRES_PASSWORD: adminpassword
       POSTGRES_DB: hospital_db
+    # Comando vital: Si existe archivo 'standby', arranca como esclavo. Si no, como maestro.
+    command: >
+      bash -c "
+      if [ -f /var/lib/postgresql/data/standby.signal ]; then
+        docker-entrypoint.sh postgres;
+      else
+        docker-entrypoint.sh postgres -c wal_level=replica -c hot_standby=on -c max_wal_senders=10 -c max_replication_slots=10 -c hot_standby_feedback=on;
+      fi"
     volumes:
-      - ./app2/db/master_init.sh:/docker-entrypoint-initdb.d/init.sh
-    command: |
-      postgres -c wal_level=replica -c hot_standby=on -c max_wal_senders=10 -c max_replication_slots=10 -c hot_standby_feedback=on
+      - pg_a_data:/var/lib/postgresql/data
     networks:
-      - main-network
+      - hospital-net
 
-  pg-replica:
+  # --- NODO B ---
+  pg-b:
     image: postgres:15-alpine
-    container_name: pg-replica
+    container_name: pg-b
+    hostname: pg-b
     environment:
-      PGPASSWORD: adminpassword
-    depends_on:
-      - pg-master
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: adminpassword
+      POSTGRES_DB: hospital_db
+    command: >
+      bash -c "
+      if [ -f /var/lib/postgresql/data/standby.signal ]; then
+        docker-entrypoint.sh postgres;
+      else
+        docker-entrypoint.sh postgres -c wal_level=replica -c hot_standby=on -c max_wal_senders=10 -c max_replication_slots=10 -c hot_standby_feedback=on;
+      fi"
     volumes:
-      - ./app2/db/replica_init.sh:/usr/local/bin/replica_init.sh
-    entrypoint: [ "bash", "/usr/local/bin/replica_init.sh" ]
+      - pg_b_data:/var/lib/postgresql/data
     networks:
-      - main-network
+      - hospital-net
 
+  # --- ORQUESTADOR ---
   haproxy:
     image: haproxy:2.7
     container_name: haproxy
     ports:
-      - "5000:5000"
-      - "5001:5001"
+      - "5000:5000" # Puerto ÚNICO para la App Java
     volumes:
-      - ./app2/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
-    depends_on:
-      - pg-master
-      - pg-replica
+      - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
     networks:
-      - main-network
+      - hospital-net
 
+  # --- VIGILANTE SUPREMO ---
   vigilante:
     image: docker:cli
     container_name: vigilante
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - ./app2/vigilante.sh:/vigilante.sh
-    command: [ "sh", "/vigilante.sh" ]
+      - /var/run/docker.sock:/var/run/docker.sock # Controlar Docker
+      - ./vigilante.sh:/vigilante.sh             # El Script
+      - ./:/workdir                                # Acceso a la carpeta de Windows
+    working_dir: /workdir
+    command: ["sh", "/vigilante.sh"]
     networks:
-      - main-network
+      - hospital-net
 
-  # ==========================================
-  # APP 3: BIBLIOTECA (MySQL + Orchestrator)
-  # ==========================================
-  mysql-master:
-    image: mysql:5.7
-    container_name: mysql-master
-    environment:
-      MYSQL_ROOT_PASSWORD: rootpass
-      MYSQL_DATABASE: biblioteca
-    ports:
-      - "3307:3306"
-    command: >
-      --server-id=1 --log-bin=mysql-bin --binlog-format=ROW --gtid-mode=ON --enforce-gtid-consistency=ON
-    healthcheck:
-      test: [ "CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-prootpass" ]
-      interval: 5s
-      retries: 15
-    volumes:
-      - ./app3/database/init-db.sql:/docker-entrypoint-initdb.d/01-init.sql
-      - ./app3/database/setup-replication.sql:/docker-entrypoint-initdb.d/02-replication.sql
-    networks:
-      - main-network
-
-  mysql-replica1:
-    image: mysql:5.7
-    container_name: mysql-replica1
-    environment:
-      MYSQL_ROOT_PASSWORD: rootpass
-    command: >
-      --server-id=2 --log-bin=mysql-bin --binlog-format=ROW --gtid-mode=ON --enforce-gtid-consistency=ON --log-slave-updates=ON --read-only=ON
-    depends_on:
-      mysql-master:
-        condition: service_healthy
-    volumes:
-      - ./app3/database/setup-replica.sh:/docker-entrypoint-initdb.d/setup-replica.sh
-    networks:
-      - main-network
-
-  mysql-replica2:
-    image: mysql:5.7
-    container_name: mysql-replica2
-    environment:
-      MYSQL_ROOT_PASSWORD: rootpass
-    command: >
-      --server-id=3 --log-bin=mysql-bin --binlog-format=ROW --gtid-mode=ON --enforce-gtid-consistency=ON --log-slave-updates=ON --read-only=ON
-    depends_on:
-      mysql-master:
-        condition: service_healthy
-    volumes:
-      - ./app3/database/setup-replica.sh:/docker-entrypoint-initdb.d/setup-replica.sh
-    networks:
-      - main-network
-
-  mysql-replica3:
-    image: mysql:5.7
-    container_name: mysql-replica3
-    environment:
-      MYSQL_ROOT_PASSWORD: rootpass
-    command: >
-      --server-id=4 --log-bin=mysql-bin --binlog-format=ROW --gtid-mode=ON --enforce-gtid-consistency=ON --log-slave-updates=ON --read-only=ON
-    depends_on:
-      mysql-master:
-        condition: service_healthy
-    volumes:
-      - ./app3/database/setup-replica.sh:/docker-entrypoint-initdb.d/setup-replica.sh
-    networks:
-      - main-network
-
-  orchestrator:
-    image: openarkcode/orchestrator:latest
-    container_name: orchestrator
-    ports:
-      - "3000:3000" # Se mantiene el puerto 3000 original para Orchestrator
-    volumes:
-      - ./app3/database/orchestrator.conf.json:/etc/orchestrator.conf.json
-      - orchestrator-data:/var/lib/orchestrator
-    depends_on:
-      mysql-master:
-        condition: service_healthy
-    networks:
-      - main-network
-
-  middleware:
-    build:
-      context: ./Middleware
-    container_name: middleware-api
-    ports:
-      - "4000:4000"
-    environment:
-      - DB_HOST_WRITE=mysql-master
-      - DB_HOST_READ=mysql-replica1
-      - DB_USER=root
-      - DB_PASS=rootpass
-      - DB_NAME=biblioteca
-    depends_on:
-      - mysql-master
-    networks:
-      - main-network
-
-  app3-gui:
-    build:
-      context: ./app3/aplicacion
-    container_name: app3-tkinter
-    depends_on:
-      - middleware
-    environment:
-      - MIDDLEWARE_URL=http://middleware:4000
-      - DISPLAY=${DISPLAY:-host.docker.internal:0.0}
-    volumes:
-      - /tmp/.X11-unix:/tmp/.X11-unix
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    networks:
-      - main-network
-
-# ==========================================
-# REDES Y VOLUMENES GLOBALES
-# ==========================================
 networks:
-  main-network:
+  hospital-net:
     driver: bridge
 
 volumes:
-  orchestrator-data:
-  galera_data_1:
-    driver: local
-  galera_data_2:
-    driver: local
-  galera_data_3:
-    driver: local
+  pg_a_data:
+  pg_b_data:
