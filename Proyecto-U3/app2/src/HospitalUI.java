@@ -9,12 +9,13 @@ public class HospitalUI extends JFrame {
     private JTextField txtPaciente, txtHora;
 
     public HospitalUI() {
-        setTitle("Sistema Hospital (HAProxy: Write:5000 / Read:5001)");
+        setTitle("Sistema Hospital (Orquestación Automática - Puerto 5000)");
         setSize(750, 500);
         setDefaultCloseOperation(EXIT_ON_CLOSE);
         setLayout(new BorderLayout());
 
-        // 1. Inicialización: Crear tabla (Operación de Escritura)
+        // 1. Inicialización: Crear tabla si no existe
+        // Ahora usamos la conexión genérica, el Vigilante dirige al Maestro
         createTableIfNotExists();
 
         // 2. Panel Superior (Inputs)
@@ -46,14 +47,14 @@ public class HospitalUI extends JFrame {
         btnRefresh.addActionListener(e -> loadCitas());
         btnDelete.addActionListener(e -> deleteCita());
 
-        // Carga inicial (Lectura)
+        // Carga inicial
         loadCitas();
     }
 
-    // --- MÉTODO DE ESCRITURA (Puerto 5000) ---
+    // --- CREAR TABLA ---
     private void createTableIfNotExists() {
-        // Usamos getWriteConnection porque CREATE TABLE cambia la base de datos
-        try (Connection conn = DatabaseManager.getWriteConnection();
+        // Usamos DatabaseManager.getConnection() para TODO
+        try (Connection conn = DatabaseManager.getConnection();
              Statement stmt = conn.createStatement()) {
             
             String sql = "CREATE TABLE IF NOT EXISTS citas (" +
@@ -62,17 +63,17 @@ public class HospitalUI extends JFrame {
                          "fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP, " +
                          "descripcion TEXT)";
             stmt.executeUpdate(sql);
-            System.out.println("Tabla verificada en el Maestro.");
+            System.out.println("Verificación de tabla completada.");
             
         } catch (SQLException e) {
-            JOptionPane.showMessageDialog(this, "Error conectando al Maestro (HAProxy 5000): " + e.getMessage());
+            JOptionPane.showMessageDialog(this, "Error conectando al Cluster: " + e.getMessage());
             e.printStackTrace();
         }
     }
 
-    // --- MÉTODO DE ESCRITURA (Puerto 5000) ---
+    // --- AÑADIR (INSERT) ---
     private void addCita() {
-        try (Connection conn = DatabaseManager.getWriteConnection();
+        try (Connection conn = DatabaseManager.getConnection();
              PreparedStatement pstmt = conn.prepareStatement("INSERT INTO citas (paciente, descripcion) VALUES (?, ?)")) {
             
             pstmt.setString(1, txtPaciente.getText());
@@ -82,21 +83,17 @@ public class HospitalUI extends JFrame {
             txtPaciente.setText("");
             txtHora.setText("");
             
-            // TRUCO: Esperamos 500ms para dar tiempo a que el dato viaje del Maestro a la Réplica
-            Thread.sleep(500);
-            
-            // Recargamos (Lectura)
+            // Recargamos inmediatamente
             loadCitas();
         } catch (Exception e) {
-            JOptionPane.showMessageDialog(this, "Error al guardar: " + e.getMessage());
+            JOptionPane.showMessageDialog(this, "Error al guardar (Si hubo failover, reintenta en 5s): " + e.getMessage());
         }
     }
 
-    // --- MÉTODO DE LECTURA (Puerto 5001) ---
+    // --- LEER (SELECT) ---
     private void loadCitas() {
         model.setRowCount(0); // Limpiar tabla visual
-        // Usamos getReadConnection para balancear carga
-        try (Connection conn = DatabaseManager.getReadConnection();
+        try (Connection conn = DatabaseManager.getConnection();
              Statement stmt = conn.createStatement();
              ResultSet rs = stmt.executeQuery("SELECT * FROM citas ORDER BY id DESC")) {
             
@@ -108,13 +105,13 @@ public class HospitalUI extends JFrame {
                     rs.getTimestamp("fecha")
                 });
             }
-            System.out.println("Datos cargados (Round-Robin).");
+            System.out.println("Datos cargados desde el Maestro actual.");
         } catch (SQLException e) {
             System.err.println("Error leyendo datos: " + e.getMessage());
         }
     }
 
-    // --- MÉTODO DE ESCRITURA (Puerto 5000) ---
+    // --- BORRAR (DELETE) ---
     private void deleteCita() {
         int row = table.getSelectedRow();
         if (row == -1) {
@@ -123,13 +120,12 @@ public class HospitalUI extends JFrame {
         }
         int id = (int) model.getValueAt(row, 0);
 
-        try (Connection conn = DatabaseManager.getWriteConnection();
+        try (Connection conn = DatabaseManager.getConnection();
              PreparedStatement pstmt = conn.prepareStatement("DELETE FROM citas WHERE id = ?")) {
             
             pstmt.setInt(1, id);
             pstmt.executeUpdate();
             
-            Thread.sleep(500); // Espera de replicación
             loadCitas();
         } catch (Exception e) {
             JOptionPane.showMessageDialog(this, "Error al eliminar: " + e.getMessage());
