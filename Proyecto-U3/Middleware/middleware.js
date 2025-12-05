@@ -5,12 +5,49 @@ const app = express();
 
 app.use(express.json());
 
-const poolWrite = mysql.createPool({
-    host: process.env.DB_HOST_WRITE || 'mysql-master',
-    user: process.env.DB_USER || 'root',
-    password: process.env.DB_PASS || 'rootpass',
-    database: process.env.DB_NAME || 'biblioteca'
-});
+async function getCurrentMaster() {
+    const possibleMasters = ['mysql-master', 'mysql-replica1', 'mysql-replica2', 'mysql-replica3'];
+    
+    for (const host of possibleMasters) {
+        try {
+            const testPool = mysql.createPool({
+                host: host,
+                user: process.env.DB_USER || 'root',
+                password: process.env.DB_PASS || 'rootpass',
+                database: process.env.DB_NAME || 'biblioteca',
+                connectionLimit: 1,
+                connectTimeout: 2000
+            });
+            
+            await testPool.query('SELECT 1');
+            
+            const [rows] = await testPool.query('SELECT @@read_only as ro');
+            await testPool.end();
+            
+            if (rows[0].ro === 0) {
+                console.log(`Master encontrado: ${host}`);
+                return host;
+            }
+        } catch (e) {
+            continue;
+        }
+    }
+    
+    console.log("No se encontró ningún master disponible, usando mysql-master por defecto");
+    return 'mysql-master';
+}
+
+async function getWritePool() {
+    const masterHost = await getCurrentMaster();
+    return mysql.createPool({
+        host: masterHost,
+        user: process.env.DB_USER || 'root',
+        password: process.env.DB_PASS || 'rootpass',
+        database: process.env.DB_NAME || 'biblioteca',
+        waitForConnections: true,
+        connectionLimit: 10
+    });
+}
 
 const poolRead = mysql.createPool({
     host: process.env.DB_HOST_READ || 'mysql-replica1',
@@ -28,46 +65,31 @@ const poolHospital = new Pool({
 });
 
 // ==========================================
-// RUTAS PROPIAS DE APP 3 (Biblioteca)
+// RUTAS PROPIAS DE APP 3 (Biblioteca - Casa Matriz)
 // ==========================================
 
-app.get("/api/products", async (req, res) => {
+app.get("/health", async (req, res) => {
+    let masterActual = "Desconocido";
+    
     try {
-        const [rows] = await poolRead.query("SELECT * FROM products");
-        res.json(rows);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
+        const orchResponse = await fetch("http://orchestrator:3000/api/clusters-info");
+        const orchData = await orchResponse.json();
+        
+        if (orchData && orchData.length > 0) {
+            const cluster = orchData[0];
+            if (cluster.ClusterName) {
+                masterActual = cluster.ClusterName;
+            }
+        }
+    } catch (e) {
+        console.error("Error consultando Orchestrator:", e.message);
     }
-});
 
-app.get("/api/users", async (req, res) => {
-    try {
-        const [rows] = await poolRead.query("SELECT * FROM users");
-        res.json(rows);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-app.post("/api/orders", async (req, res) => {
-    const { userId, productId } = req.body;
-    try {
-        const [result] = await poolWrite.query(
-            "INSERT INTO orders (user_id, product_id) VALUES (?, ?)", 
-            [userId, productId]
-        );
-        res.json({ 
-            status: "Orden creada",
-            orderId: result.insertId,
-            details: { userId, productId }
-        });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-app.get("/health", (req, res) => {
-    res.json({ status: "Middleware OK", database: "MySQL Cluster" });
+    res.json({ 
+        status: "Middleware OK", 
+        database: "MySQL Cluster",
+        master_actual: masterActual
+    });
 });
 
 
@@ -75,7 +97,6 @@ app.get("/health", (req, res) => {
 // RUTAS DE CONEXIÓN EXTERNA (DASHBOARD)
 // ==========================================
 
-// --- Endpoint de Estado General del Sistema ---
 app.get("/api/system-status", async (req, res) => {
     const status = {
         middleware: "down",
@@ -107,8 +128,6 @@ app.get("/api/system-status", async (req, res) => {
     res.json(status);
 });
 
-// --- Rutas para App 1 (Compras) ---
-
 app.get("/api/externo/app1/lists", async (req, res) => {
     try {
         const r = await fetch("http://app1-backend:3000/lists");
@@ -136,7 +155,6 @@ app.get("/api/externo/app1/items", async (req, res) => {
     }
 });
 
-// --- Rutas para App 2 (Hospital) ---
 
 app.get("/api/externo/hospital/citas", async (req, res) => {
     try {
@@ -145,6 +163,107 @@ app.get("/api/externo/hospital/citas", async (req, res) => {
     } catch (err) {
         console.error("Error Postgres:", err);
         res.status(500).json({ error: "Error conectando al Hospital (Postgres)" });
+    }
+});
+
+// ==========================================
+// RUTAS DE SINCRONIZACIÓN
+// ==========================================
+
+app.post("/api/sync/app1", async (req, res) => {
+    let poolWrite = null;
+    try {
+        poolWrite = await getWritePool();
+        
+        const listsRes = await fetch("http://app1-backend:3000/lists");
+        const lists = await listsRes.json();
+
+        const itemsRes = await fetch("http://app1-backend:3000/items");
+        const items = await itemsRes.json();
+
+        for (const list of lists) {
+            await poolWrite.query(
+                `INSERT INTO sync_shopping_lists (id, name) VALUES (?, ?) 
+                 ON DUPLICATE KEY UPDATE name = VALUES(name), synced_at = CURRENT_TIMESTAMP`,
+                [list.id, list.name]
+            );
+        }
+
+        for (const item of items) {
+            await poolWrite.query(
+                `INSERT INTO sync_shopping_items (id, description, completed, list_id) VALUES (?, ?, ?, ?) 
+                 ON DUPLICATE KEY UPDATE description = VALUES(description), completed = VALUES(completed), 
+                 list_id = VALUES(list_id), synced_at = CURRENT_TIMESTAMP`,
+                [item.id, item.description, item.completed || false, item.list_id]
+            );
+        }
+
+        res.json({ status: "App1 sincronizado", lists: lists.length, items: items.length });
+    } catch (err) {
+        console.error("Error sync app1:", err);
+        res.status(500).json({ error: "Error sincronizando App1: " + err.message });
+    } finally {
+        if (poolWrite) await poolWrite.end();
+    }
+});
+
+app.post("/api/sync/hospital", async (req, res) => {
+    let poolWrite = null;
+    try {
+        poolWrite = await getWritePool();
+        
+        const result = await poolHospital.query('SELECT * FROM citas');
+        const citas = result.rows;
+
+        for (const cita of citas) {
+            await poolWrite.query(
+                `INSERT INTO sync_hospital_citas (id, paciente, descripcion, fecha) VALUES (?, ?, ?, ?) 
+                 ON DUPLICATE KEY UPDATE paciente = VALUES(paciente), descripcion = VALUES(descripcion), 
+                 fecha = VALUES(fecha), synced_at = CURRENT_TIMESTAMP`,
+                [cita.id, cita.paciente, cita.descripcion, cita.fecha]
+            );
+        }
+
+        res.json({ status: "Hospital sincronizado", citas: citas.length });
+    } catch (err) {
+        console.error("Error sync hospital:", err);
+        res.status(500).json({ error: "Error sincronizando Hospital: " + err.message });
+    } finally {
+        if (poolWrite) await poolWrite.end();
+    }
+});
+
+// ==========================================
+// RUTAS DE BASE DE DATOS LOCAL (CONSULTA)
+// ==========================================
+
+app.get("/api/local/lists", async (req, res) => {
+    try {
+        const [rows] = await poolRead.query("SELECT * FROM sync_shopping_lists ORDER BY id");
+        res.json(rows);
+    } catch (err) {
+        console.error("Error local lists:", err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get("/api/local/items", async (req, res) => {
+    try {
+        const [rows] = await poolRead.query("SELECT * FROM sync_shopping_items ORDER BY id");
+        res.json(rows);
+    } catch (err) {
+        console.error("Error local items:", err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get("/api/local/citas", async (req, res) => {
+    try {
+        const [rows] = await poolRead.query("SELECT * FROM sync_hospital_citas ORDER BY id DESC");
+        res.json(rows);
+    } catch (err) {
+        console.error("Error local citas:", err);
+        res.status(500).json({ error: err.message });
     }
 });
 
