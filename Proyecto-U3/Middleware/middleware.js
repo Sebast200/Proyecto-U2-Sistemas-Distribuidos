@@ -5,6 +5,7 @@ const app = express();
 
 app.use(express.json());
 
+// Retorna el hostname del master actual para conexión
 async function getCurrentMaster() {
     const possibleMasters = ['mysql-master', 'mysql-replica1', 'mysql-replica2', 'mysql-replica3'];
     
@@ -35,6 +36,38 @@ async function getCurrentMaster() {
     
     console.log("No se encontró ningún master disponible, usando mysql-master por defecto");
     return 'mysql-master';
+}
+
+// Retorna información detallada del master para mostrar en UI (hostname con ID)
+async function getMasterInfo() {
+    const possibleMasters = ['mysql-master', 'mysql-replica1', 'mysql-replica2', 'mysql-replica3'];
+    
+    for (const host of possibleMasters) {
+        try {
+            const testPool = mysql.createPool({
+                host: host,
+                user: process.env.DB_USER || 'root',
+                password: process.env.DB_PASS || 'rootpass',
+                database: process.env.DB_NAME || 'biblioteca',
+                connectionLimit: 1,
+                connectTimeout: 2000
+            });
+            
+            await testPool.query('SELECT 1');
+            
+            const [rows] = await testPool.query('SELECT @@read_only as ro, @@hostname as hostname');
+            await testPool.end();
+            
+            if (rows[0].ro === 0) {
+                // Retornar formato: hostname:puerto
+                return `${rows[0].hostname}:3306`;
+            }
+        } catch (e) {
+            continue;
+        }
+    }
+    
+    return 'Desconocido';
 }
 
 async function getWritePool() {
@@ -72,17 +105,11 @@ app.get("/health", async (req, res) => {
     let masterActual = "Desconocido";
     
     try {
-        const orchResponse = await fetch("http://orchestrator:3000/api/clusters-info");
-        const orchData = await orchResponse.json();
-        
-        if (orchData && orchData.length > 0) {
-            const cluster = orchData[0];
-            if (cluster.ClusterName) {
-                masterActual = cluster.ClusterName;
-            }
-        }
+        // Usar getMasterInfo() para obtener el hostname con ID del contenedor
+        masterActual = await getMasterInfo();
     } catch (e) {
-        console.error("Error consultando Orchestrator:", e.message);
+        console.error("Error detectando master:", e.message);
+        masterActual = "Desconocido";
     }
 
     res.json({ 
